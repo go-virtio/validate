@@ -268,13 +268,13 @@ func padDword(b []byte) []byte {
 //	simple_pointer(present)                                 (uint64 = 1)
 //	handle VkQueue                                          (uint64)
 const (
-	stDeviceQueueInfo2          = 1000145003
-	stDeviceQueueTimelineMESA   = 1000384005
+	stDeviceQueueInfo2        = 1000145003
+	stDeviceQueueTimelineMESA = 1000384005
 	queueSyncRingIdx          = 1 // non-zero, unused (CPU ring is idx 0)
 )
 
-func putU32(b []byte, v uint32) []byte    { return binary.LittleEndian.AppendUint32(b, v) }
-func putU64(b []byte, v uint64) []byte    { return binary.LittleEndian.AppendUint64(b, v) }
+func putU32(b []byte, v uint32) []byte { return binary.LittleEndian.AppendUint32(b, v) }
+func putU64(b []byte, v uint64) []byte { return binary.LittleEndian.AppendUint64(b, v) }
 func putSimplePtr(b []byte, p bool) []byte {
 	if p {
 		return putU64(b, 1)
