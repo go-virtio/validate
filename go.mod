@@ -5,7 +5,9 @@ go 1.26.4
 require (
 	github.com/go-virtio/blk v0.2.0
 	github.com/go-virtio/common v0.1.4
+	github.com/go-virtio/console v0.1.0
 	github.com/go-virtio/gpu v0.5.0
+	github.com/go-virtio/net v0.1.1
 	github.com/usbarmory/tamago v1.26.4
 )
 
