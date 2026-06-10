@@ -1,6 +1,7 @@
-// tamagoTransport bridges go-virtio/common.Transport to tamago's amd64
-// PCI + DMA facilities so the transport-agnostic virtio-gpu driver can
-// drive a real virtio-gpu-pci device under QEMU.
+// Package transport bridges go-virtio/common.Transport to tamago's amd64
+// PCI + DMA facilities so the transport-agnostic virtio drivers can drive a
+// real virtio-*-pci device under QEMU. It is shared by every harness command
+// (cmd/gpuvalidate, cmd/blkvalidate, …).
 //
 // Three sub-interfaces (see go-virtio/common/transport.go):
 //
@@ -17,7 +18,7 @@
 //   - PageAllocator: routed to tamago's dma.Reserve, which carves
 //     page-aligned, physically-contiguous, identity-mapped buffers out of
 //     the board's global DMA region.
-package main
+package transport
 
 import (
 	"unsafe"
@@ -31,8 +32,8 @@ import (
 // pageSize mirrors common.PageSize (4 KiB) for the DMA allocator.
 const pageSize = 4096
 
-// tamagoTransport implements common.Transport for one PCI virtio device.
-type tamagoTransport struct {
+// Transport implements common.Transport for one PCI virtio device.
+type Transport struct {
 	dev *pci.Device
 
 	// barBase[i] is the physical base address of BAR i, decoded once at
@@ -41,16 +42,16 @@ type tamagoTransport struct {
 	barBase [6]uint64
 }
 
-// newTamagoTransport builds a transport for dev. It enables PCI Memory
-// Space (so BAR MMIO decodes) and Bus Master (so the device can DMA into
-// our virtqueue / framebuffer backing) then snapshots every BAR base.
-func newTamagoTransport(dev *pci.Device) *tamagoTransport {
+// New builds a transport for dev. It enables PCI Memory Space (so BAR MMIO
+// decodes) and Bus Master (so the device can DMA into our virtqueue /
+// backing buffers) then snapshots every BAR base.
+func New(dev *pci.Device) *Transport {
 	// PCI Command register: bit1 = Memory Space Enable, bit2 = Bus Master
 	// Enable. Both are required for a DMA-capable MMIO virtio device.
 	cmd := dev.Read(0, pci.Command)
 	dev.Write(0, pci.Command, cmd|(1<<1)|(1<<2))
 
-	t := &tamagoTransport{dev: dev}
+	t := &Transport{dev: dev}
 	for i := 0; i < 6; i++ {
 		t.barBase[i] = uint64(dev.BaseAddress(i))
 	}
@@ -67,32 +68,32 @@ func newTamagoTransport(dev *pci.Device) *tamagoTransport {
 // and extract the requested byte / word from the full low two bits.
 
 // dword returns the 32-bit config-space dword containing offset, aligned.
-func (t *tamagoTransport) dword(offset uint8) uint32 {
+func (t *Transport) dword(offset uint8) uint32 {
 	// Pass an already-aligned offset so tamago's internal (off&2)*8 shift
 	// is zero and we get the raw little-endian dword back.
 	return t.dev.Read(0, uint32(offset)&0xfc)
 }
 
-func (t *tamagoTransport) ReadConfig8(offset uint8) (uint8, error) {
+func (t *Transport) ReadConfig8(offset uint8) (uint8, error) {
 	v := t.dword(offset)
 	shift := (uint32(offset) & 3) * 8
 	return uint8((v >> shift) & 0xff), nil
 }
 
-func (t *tamagoTransport) ReadConfig16(offset uint8) (uint16, error) {
+func (t *Transport) ReadConfig16(offset uint8) (uint16, error) {
 	v := t.dword(offset)
 	shift := (uint32(offset) & 2) * 8
 	return uint16((v >> shift) & 0xffff), nil
 }
 
-func (t *tamagoTransport) ReadConfig32(offset uint8) (uint32, error) {
+func (t *Transport) ReadConfig32(offset uint8) (uint32, error) {
 	return t.dword(offset), nil
 }
 
 // --- BARMemoryAccessor -------------------------------------------------
 
 // addr resolves (bar, offset) to a physical MMIO address.
-func (t *tamagoTransport) addr(bar uint8, offset uint64) (uintptr, error) {
+func (t *Transport) addr(bar uint8, offset uint64) (uintptr, error) {
 	if bar > 5 {
 		return 0, errBadBAR
 	}
@@ -103,7 +104,7 @@ func (t *tamagoTransport) addr(bar uint8, offset uint64) (uintptr, error) {
 	return uintptr(base + offset), nil
 }
 
-func (t *tamagoTransport) Read8(bar uint8, offset uint64) (uint8, error) {
+func (t *Transport) Read8(bar uint8, offset uint64) (uint8, error) {
 	a, err := t.addr(bar, offset)
 	if err != nil {
 		return 0, err
@@ -111,7 +112,7 @@ func (t *tamagoTransport) Read8(bar uint8, offset uint64) (uint8, error) {
 	return *(*uint8)(unsafe.Pointer(a)), nil
 }
 
-func (t *tamagoTransport) Read16(bar uint8, offset uint64) (uint16, error) {
+func (t *Transport) Read16(bar uint8, offset uint64) (uint16, error) {
 	a, err := t.addr(bar, offset)
 	if err != nil {
 		return 0, err
@@ -119,7 +120,7 @@ func (t *tamagoTransport) Read16(bar uint8, offset uint64) (uint16, error) {
 	return *(*uint16)(unsafe.Pointer(a)), nil
 }
 
-func (t *tamagoTransport) Read32(bar uint8, offset uint64) (uint32, error) {
+func (t *Transport) Read32(bar uint8, offset uint64) (uint32, error) {
 	a, err := t.addr(bar, offset)
 	if err != nil {
 		return 0, err
@@ -127,7 +128,7 @@ func (t *tamagoTransport) Read32(bar uint8, offset uint64) (uint32, error) {
 	return *(*uint32)(unsafe.Pointer(a)), nil
 }
 
-func (t *tamagoTransport) Read64(bar uint8, offset uint64) (uint64, error) {
+func (t *Transport) Read64(bar uint8, offset uint64) (uint64, error) {
 	// Decompose into two 32-bit reads (low then high) — robust against
 	// MMIO windows that dislike 64-bit accesses.
 	lo, err := t.Read32(bar, offset)
@@ -141,7 +142,7 @@ func (t *tamagoTransport) Read64(bar uint8, offset uint64) (uint64, error) {
 	return uint64(hi)<<32 | uint64(lo), nil
 }
 
-func (t *tamagoTransport) Write8(bar uint8, offset uint64, val uint8) error {
+func (t *Transport) Write8(bar uint8, offset uint64, val uint8) error {
 	a, err := t.addr(bar, offset)
 	if err != nil {
 		return err
@@ -150,7 +151,7 @@ func (t *tamagoTransport) Write8(bar uint8, offset uint64, val uint8) error {
 	return nil
 }
 
-func (t *tamagoTransport) Write16(bar uint8, offset uint64, val uint16) error {
+func (t *Transport) Write16(bar uint8, offset uint64, val uint16) error {
 	a, err := t.addr(bar, offset)
 	if err != nil {
 		return err
@@ -159,7 +160,7 @@ func (t *tamagoTransport) Write16(bar uint8, offset uint64, val uint16) error {
 	return nil
 }
 
-func (t *tamagoTransport) Write32(bar uint8, offset uint64, val uint32) error {
+func (t *Transport) Write32(bar uint8, offset uint64, val uint32) error {
 	a, err := t.addr(bar, offset)
 	if err != nil {
 		return err
@@ -168,7 +169,7 @@ func (t *tamagoTransport) Write32(bar uint8, offset uint64, val uint32) error {
 	return nil
 }
 
-func (t *tamagoTransport) Write64(bar uint8, offset uint64, val uint64) error {
+func (t *Transport) Write64(bar uint8, offset uint64, val uint64) error {
 	if err := t.Write32(bar, offset, uint32(val)); err != nil {
 		return err
 	}
@@ -179,8 +180,8 @@ func (t *tamagoTransport) Write64(bar uint8, offset uint64, val uint64) error {
 
 // AllocatePages reserves count page-aligned, physically-contiguous,
 // identity-mapped pages from tamago's global DMA region and zeroes them
-// (the driver relies on a zeroed used-ring idx).
-func (t *tamagoTransport) AllocatePages(count int) (uint64, []byte, error) {
+// (the drivers rely on a zeroed used-ring idx).
+func (t *Transport) AllocatePages(count int) (uint64, []byte, error) {
 	if count <= 0 {
 		return 0, nil, errBadAlloc
 	}
@@ -194,8 +195,8 @@ func (t *tamagoTransport) AllocatePages(count int) (uint64, []byte, error) {
 	return uint64(addr), buf, nil
 }
 
-// compile-time assertion that *tamagoTransport satisfies the interface.
-var _ common.Transport = (*tamagoTransport)(nil)
+// compile-time assertion that *Transport satisfies the interface.
+var _ common.Transport = (*Transport)(nil)
 
 type transportError string
 

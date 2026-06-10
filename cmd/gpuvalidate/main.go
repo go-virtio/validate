@@ -18,6 +18,7 @@ import (
 	"fmt"
 
 	_ "github.com/go-virtio/validate/board"
+	"github.com/go-virtio/validate/transport"
 
 	"github.com/usbarmory/tamago/soc/intel/pci"
 
@@ -41,7 +42,7 @@ func main() {
 		halt()
 	}
 
-	t := newTamagoTransport(dev)
+	t := transport.New(dev)
 
 	g, err := gpu.OpenVirtioGPU(t)
 	if err != nil {
