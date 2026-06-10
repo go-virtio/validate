@@ -19,16 +19,18 @@
 // returned handles and VkResults are decoded for real. The host head advance
 // per command is the proof the renderer consumed each batch.
 //
-// CONFIRMATION (Task 2). Pixel readback over a host-visible mapping requires
-// host-defined plumbing the proven encoder closure does not derive
-// (VkImportMemoryResourceInfoMESA as the VkMemoryAllocateInfo pNext + a guest
-// renderer BO whose blob_id matches the device-memory id + RESOURCE_MAP_BLOB;
-// see Mesa vn_device_memory.c:vn_device_memory_import_dma_buf /
-// vn_device_memory_alloc_guest_vram). So venusclear's verdict rests on the
-// HOST-BEHAVIOUR evidence: vkCreateImage returned VK_SUCCESS + a handle, the
-// barrier + CmdClearColorImage were consumed (head advanced), and vkQueueSubmit
-// + vkQueueWaitIdle returned VK_SUCCESS with NO CS error. The harness pairs
-// this with the server stderr (vkr logs) for the renderer's own confirmation.
+// GUEST-VISIBLE READBACK (the last Venus frontier — now closed). After the
+// clear completes, the driver creates the renderer BO that backs the
+// VkDeviceMemory (vn_device_memory_bo_init: RESOURCE_CREATE_BLOB HOST3D|MAPPABLE
+// with blob_id = the VkDeviceMemory's vn_object_id), mmaps the exported blob fd
+// guest-side (vtest_bo_map = plain mmap; vkMapMemory is no host round-trip for
+// the bytes, vn_UnmapMemory2 is a no-op), and reads the cleared texels. This is
+// the vtest path — NOT the guest_vram VkImportMemoryResourceInfoMESA pNext path,
+// which is gated on dev->renderer->info.has_guest_vram that vtest never sets.
+// The host backs the device memory with that blob via vkr
+// vkr_context_create_resource_from_device_memory (blob_id -> existing
+// VkDeviceMemory), so the mapped bytes ARE the image's storage. The verdict now
+// requires the read-back texels to equal the clear colour (red).
 package main
 
 import (
@@ -85,6 +87,16 @@ func main() {
 			res.ResCreatePool, res.ResAllocCmdBuf, res.ResBeginCmdBuf, res.ResEndCmdBuf)
 		fmt.Printf("  CreateFence=%d QueueSubmit=%d WaitForFences=%d\n",
 			res.ResCreateFence, res.ResQueueSubmit, res.ResWaitForFences)
+		fmt.Println("  --- guest-visible readback (the cleared image's pixels) ---")
+		fmt.Printf("  device-memory blob res_id   = %d (blob_id tied to VkDeviceMemory %#x)\n",
+			res.MemBlobResID, res.Memory)
+		fmt.Printf("  readback performed          = %v\n", res.ReadbackDone)
+		fmt.Printf("  texel(0,0) read back        = %#02x %#02x %#02x %#02x (RGBA)\n",
+			res.FirstTexel[0], res.FirstTexel[1], res.FirstTexel[2], res.FirstTexel[3])
+		fmt.Printf("  expected clear texel        = %#02x %#02x %#02x %#02x (RGBA)\n",
+			res.ExpectTexel[0], res.ExpectTexel[1], res.ExpectTexel[2], res.ExpectTexel[3])
+		fmt.Printf("  texels matching clear       = %d/%d  readback_pass=%v\n",
+			res.TexelsRed, res.TexelsChecked, res.ReadbackPass)
 		fmt.Println("  --- per-command ring trace (seqno = tail after write; head = host consumed) ---")
 		for _, t := range res.Trace {
 			fmt.Printf("    %s\n", t)
@@ -95,19 +107,21 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Host-behaviour confirmation (Task 2): the image was created, the clear was
-	// recorded + submitted, and the submit's FENCE was signalled — i.e. the host
-	// actually EXECUTED the command buffer (including CmdClearColorImage) to
-	// completion. WaitForFences returning VK_SUCCESS is the host's own "the clear
-	// finished" confirmation.
+	// GUEST-VISIBLE verdict: the guest read the actual cleared texels back from
+	// the device-memory blob mapping and they ARE the clear colour. This is the
+	// real result — not just host-behaviour confirmation, but the bytes in hand.
 	if res.ResCreateImage == 0 && res.Image != 0 &&
-		res.ResQueueSubmit == 0 && res.ResWaitForFences == 0 {
-		fmt.Printf("PASS: VENUS clear-image — host created the image (%#x), consumed the barrier + "+
-			"CmdClearColorImage(red), and EXECUTED QueueSubmit to completion (fence %#x signalled, "+
-			"WaitForFences=VK_SUCCESS, no CS error)\n",
-			res.Image, res.Fence)
+		res.ResQueueSubmit == 0 && res.ResWaitForFences == 0 &&
+		res.ReadbackDone && res.ReadbackPass {
+		fmt.Printf("PASS: VENUS clear-image — GUEST READ BACK the cleared pixels: texel(0,0)=%#02x%#02x%#02x%#02x "+
+			"(RGBA), %d/%d texels == clear colour red. The host created the image (%#x), executed "+
+			"CmdClearColorImage(red) to fence completion, and backed the VkDeviceMemory (%#x) with a "+
+			"HOST3D|MAPPABLE blob (res_id=%d) the guest mmap'd and read.\n",
+			res.FirstTexel[0], res.FirstTexel[1], res.FirstTexel[2], res.FirstTexel[3],
+			res.TexelsRed, res.TexelsChecked, res.Image, res.Memory, res.MemBlobResID)
 		os.Exit(0)
 	}
-	fmt.Println("FAIL: VENUS clear-image — sequence completed but a VkResult was non-success or a handle was zero")
+	fmt.Println("FAIL: VENUS clear-image — sequence completed but readback did not confirm red " +
+		"(a VkResult was non-success, a handle was zero, or the mapped texels were not the clear colour)")
 	os.Exit(2)
 }

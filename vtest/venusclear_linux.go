@@ -54,6 +54,7 @@ const (
 	ctGetPhysDevQueueFamily  = 7
 	ctCreateDevice           = 11
 	ctGetDeviceQueue         = 17
+	ctGetDeviceQueue2        = 155
 	ctCreateImage            = 54
 	ctGetImageMemoryReqs     = 31
 	ctAllocateMemory         = 21
@@ -136,6 +137,26 @@ type ClearImageResult struct {
 
 	// ClearColor is the colour we asked CmdClearColorImage to write.
 	ClearColor [4]float32
+
+	// ---- guest-visible readback (the last Venus frontier) ----
+	// MemBlobResID is the res_id of the HOST3D|MAPPABLE blob whose blob_id ties
+	// to the VkDeviceMemory (vn_device_memory_bo_init: blob_id = mem->base.id);
+	// the host backs the device memory with this blob, so its mmap IS the
+	// cleared image's storage. Zero until the readback path runs.
+	MemBlobResID uint32
+	// ReadbackDone is true once the mapped device-memory blob was read.
+	ReadbackDone bool
+	// FirstTexel is the RGBA bytes of pixel (0,0) read from the mapped blob.
+	FirstTexel [4]byte
+	// ExpectTexel is the expected clear texel (the float clear encoded to the
+	// image format, R8G8B8A8_UNORM here).
+	ExpectTexel [4]byte
+	// TexelsChecked / TexelsRed: how many texels of the first row(s) were read
+	// back and how many matched the clear colour.
+	TexelsChecked int
+	TexelsRed     int
+	// ReadbackPass is true iff every checked texel equalled the clear colour.
+	ReadbackPass bool
 }
 
 // clearDriver carries the live transport state through the sequence.
@@ -207,6 +228,97 @@ func padDword(b []byte) []byte {
 		b = append(b, 0)
 	}
 	return b
+}
+
+// --- vkGetDeviceQueue2 command stream (hand-encoded) ---------------------
+//
+// virglrenderer's vkr DELIBERATELY refuses plain vkGetDeviceQueue:
+//
+//	vkr_dispatch_vkGetDeviceQueue(...) {
+//	    /* Must use vkGetDeviceQueue2 for proper device queue initialization. */
+//	    vkr_context_set_fatal(ctx);   // unconditional CS error
+//	}
+//
+// (src/venus/vkr_queue.c). The guest MUST use vkGetDeviceQueue2, whose
+// VkDeviceQueueInfo2 carries a VkDeviceQueueTimelineInfoMESA pNext binding the
+// queue to a sync ring index (vkr_queue_assign_ring_idx requires a non-zero,
+// in-range, currently-unbound ring_idx in ctx->sync_queues[64]). The wire shape
+// (Mesa vn_encode_*, mirrored by the host vn_decode_* in
+// vn_protocol_renderer_device.h) is:
+//
+//	int32   cmd_type = 155 (VK_COMMAND_TYPE_vkGetDeviceQueue2_EXT)
+//	uint32  cmd_flags (GENERATE_REPLY)
+//	handle  device                                          (uint64)
+//	simple_pointer(pQueueInfo present)                      (uint64 = 1)
+//	  int32  sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_INFO_2 (1000145003)
+//	  // pNext: simple_pointer(present)                     (uint64 = 1)
+//	  int32  pNext sType = DEVICE_QUEUE_TIMELINE_INFO_MESA (1000384005)
+//	  simple_pointer(pNext->pNext = NULL)                   (uint64 = 0)
+//	  uint32 ringIdx
+//	  // VkDeviceQueueInfo2 self:
+//	  uint32 flags
+//	  uint32 queueFamilyIndex
+//	  uint32 queueIndex
+//	simple_pointer(pQueue present)                          (uint64 = 1)
+//	handle  pQueue object id                                (uint64)
+//
+// Reply (vn_encode_vkGetDeviceQueue2_reply):
+//
+//	int32  cmd_type = 155
+//	simple_pointer(present)                                 (uint64 = 1)
+//	handle VkQueue                                          (uint64)
+const (
+	stDeviceQueueInfo2          = 1000145003
+	stDeviceQueueTimelineMESA   = 1000384005
+	queueSyncRingIdx          = 1 // non-zero, unused (CPU ring is idx 0)
+)
+
+func putU32(b []byte, v uint32) []byte    { return binary.LittleEndian.AppendUint32(b, v) }
+func putU64(b []byte, v uint64) []byte    { return binary.LittleEndian.AppendUint64(b, v) }
+func putSimplePtr(b []byte, p bool) []byte {
+	if p {
+		return putU64(b, 1)
+	}
+	return putU64(b, 0)
+}
+
+// encodeGetDeviceQueue2CS builds the vkGetDeviceQueue2 command stream.
+func encodeGetDeviceQueue2CS(cmdFlags uint32, device uint64, family, index uint32, ringIdx uint32, pQueue uint64) []byte {
+	var b []byte
+	b = putU32(b, ctGetDeviceQueue2) // cmd_type = 155
+	b = putU32(b, cmdFlags)
+	b = putU64(b, device) // handle
+	b = putSimplePtr(b, true)
+	// VkDeviceQueueInfo2.sType
+	b = putU32(b, stDeviceQueueInfo2)
+	// VkDeviceQueueInfo2.pNext = simple_pointer(present) -> timeline info
+	b = putSimplePtr(b, true)
+	b = putU32(b, stDeviceQueueTimelineMESA) // timeline sType
+	b = putSimplePtr(b, false)               // timeline.pNext = NULL
+	b = putU32(b, ringIdx)                   // timeline.ringIdx
+	// VkDeviceQueueInfo2 self
+	b = putU32(b, 0)      // flags (matches queue create flags = 0)
+	b = putU32(b, family) // queueFamilyIndex
+	b = putU32(b, index)  // queueIndex
+	// pQueue
+	b = putSimplePtr(b, true)
+	b = putU64(b, pQueue) // queue object id
+	return b
+}
+
+// decodeGetDeviceQueue2Reply reads the VkQueue handle out of a reply blob.
+func decodeGetDeviceQueue2Reply(reply []byte) (queue uint64, ok bool) {
+	if len(reply) < 4+8+8 {
+		return 0, false
+	}
+	if int32(binary.LittleEndian.Uint32(reply[0:4])) != ctGetDeviceQueue2 {
+		return 0, false
+	}
+	if binary.LittleEndian.Uint64(reply[4:12]) != 1 { // simple_pointer present
+		return 0, false
+	}
+	queue = binary.LittleEndian.Uint64(reply[12:20])
+	return queue, true
 }
 
 // VenusClearImage runs the full clear-image walk against a live
@@ -433,16 +545,21 @@ func VenusClearImage(socketPath string, bufferSize, width, height int, clear [4]
 		res.Device = dev
 	}
 
-	// 6. vkGetDeviceQueue -------------------------------------------------
+	// 6. vkGetDeviceQueue2 ------------------------------------------------
+	// NOTE: virglrenderer's vkr unconditionally CS-errors plain
+	// vkGetDeviceQueue ("Must use vkGetDeviceQueue2 for proper device queue
+	// initialization."). We use vkGetDeviceQueue2 with a
+	// VkDeviceQueueTimelineInfoMESA pNext binding the queue to sync ring
+	// index 1 (non-zero, unused; the CPU ring is index 0).
 	{
-		reply, err := d.submitWithReply("vkGetDeviceQueue", ctGetDeviceQueue,
-			clearcs.EncodeGetDeviceQueue(rep, res.Device, res.QueueFamilyIdx, 0, idQueue))
+		reply, err := d.submitWithReply("vkGetDeviceQueue2", ctGetDeviceQueue2,
+			encodeGetDeviceQueue2CS(rep, res.Device, res.QueueFamilyIdx, 0, queueSyncRingIdx, idQueue))
 		if err != nil {
 			return res, err
 		}
-		queue, ok := clearcs.DecodeGetDeviceQueueReply(reply)
+		queue, ok := decodeGetDeviceQueue2Reply(reply)
 		if !ok {
-			return res, fmt.Errorf("vkGetDeviceQueue: absent queue")
+			return res, fmt.Errorf("vkGetDeviceQueue2: absent queue")
 		}
 		res.Queue = queue
 	}
@@ -672,6 +789,118 @@ func VenusClearImage(socketPath string, bufferSize, width, height int, clear [4]
 		res.ResWaitForFences = result
 		if result != 0 {
 			return res, fmt.Errorf("vkWaitForFences reply: result=%d (host did not signal the submit's fence)", result)
+		}
+	}
+
+	// 20. GUEST-VISIBLE READBACK — read the cleared image's pixels back. ------
+	//
+	// This closes the last Venus frontier: not just "the host confirmed the
+	// clear", but the GUEST reads the actual cleared texels and they are red.
+	//
+	// THE PATH (source-cited, Mesa src/virtio/vulkan/vn_device_memory.c +
+	// vn_renderer_vtest.c + virglrenderer 1.3.0 vkr).  Venus over vtest does NOT
+	// use the guest_vram path (vn_device_memory_alloc_guest_vram, which prepends
+	// VkImportMemoryResourceInfoMESA to the VkMemoryAllocateInfo pNext) — that
+	// path is gated on dev->renderer->info.has_guest_vram, a virtgpu/crosvm
+	// feature the vtest renderer never advertises (vn_renderer_vtest.c sets no
+	// guest_vram).  Instead vtest takes the DEFERRED-bo path: the device memory
+	// is allocated plainly (our step 9, no pNext — vn_device_memory_alloc_simple
+	// / vn_AllocateMemory), and the renderer bo that backs it is created LATER,
+	// at map time, by vn_device_memory_bo_init:
+	//
+	//	vn_renderer_bo_create_from_device_memory(dev->renderer, batch,
+	//	    mem_vk->size, mem->base.id,            // blob_id = VkDeviceMemory id
+	//	    mem_type->propertyFlags, export_handle_types, &mem->base_bo);
+	//
+	// which in vn_renderer_vtest.c:vtest_bo_create_from_device_memory issues
+	//
+	//	VCMD_RESOURCE_CREATE_BLOB(VCMD_BLOB_TYPE_HOST3D,
+	//	    VCMD_BLOB_FLAG_MAPPABLE, size, blob_id=mem_id)
+	//
+	// (HOST_VISIBLE -> MAPPABLE per vtest_bo_blob_flags).  Host-side, the vtest
+	// server routes a HOST3D blob whose blob_id != 0 to
+	// virglrenderer vkr's vkr_context_create_resource ->
+	// vkr_context_create_resource_from_device_memory(ctx, res_id, blob_id, ...),
+	// which looks up the EXISTING VkDeviceMemory by blob_id
+	// (vkr_context_get_object(ctx, blob_id)) and exports its storage as the
+	// resource's blob (vkr_device_memory_export_blob).  Because our plain
+	// HOST_VISIBLE allocation has no res_info/export_info, vkr's vkAllocateMemory
+	// dispatch FORCES an exportable handle type host-side (the
+	// `(property_flags & HOST_VISIBLE) && !res_info` branch sets local_export_info
+	// to opaque-fd / dma_buf), so the export succeeds — the mapped blob therefore
+	// aliases lavapipe's real host-visible device memory.
+	//
+	// vkMapMemory is NOT a host round-trip for the bytes: vtest_bo_map just
+	// mmap(res_fd) the exported blob (vn_UnmapMemory2 is a literal no-op,
+	// bo_flush/bo_invalidate are nops), so the guest mmap of this blob IS the
+	// device memory.  We reproduce exactly the create-blob + mmap, then read.
+	//
+	// The image is LINEAR R8G8B8A8_UNORM bound at memory offset 0 (step 10,
+	// bindOffset 0), dedicated allocation, so texel (0,0) is at blob offset 0 and
+	// the first row is rowPitch-packed (rowPitch >= width*4).  We read the first
+	// row's worth of texels and assert each equals the clear colour.
+	{
+		allocSize := res.MemReqSize
+		if allocSize == 0 {
+			allocSize = uint64(width * height * 4)
+		}
+		// blob_id = idMemory ties the blob to the VkDeviceMemory (the crux).
+		memBlobResID, memFD, err := rc.ResourceCreateBlob(BlobTypeHost3D, BlobFlagMappable, allocSize, idMemory)
+		if err != nil {
+			return res, fmt.Errorf("readback: resource_create_blob(device-memory blob_id=%#x): %w "+
+				"(host could not back/export the VkDeviceMemory as a mappable blob)", idMemory, err)
+		}
+		res.MemBlobResID = memBlobResID
+		memMem, err := syscall.Mmap(memFD, 0, int(allocSize), syscall.PROT_READ|syscall.PROT_WRITE, syscall.MAP_SHARED)
+		syscall.Close(memFD)
+		if err != nil {
+			return res, fmt.Errorf("readback: mmap device-memory blob res_id=%d size=%d: %w", memBlobResID, allocSize, err)
+		}
+		defer syscall.Munmap(memMem)
+
+		// Expected clear texel: R8G8B8A8_UNORM encodes float c in [0,1] as
+		// round(c*255) per component, in R,G,B,A byte order (Vulkan 1.3 §VkFormat:
+		// R8G8B8A8_UNORM = byte0=R … byte3=A).
+		enc := func(f float32) byte {
+			if f <= 0 {
+				return 0
+			}
+			if f >= 1 {
+				return 255
+			}
+			return byte(f*255 + 0.5)
+		}
+		res.ExpectTexel = [4]byte{enc(clear[0]), enc(clear[1]), enc(clear[2]), enc(clear[3])}
+
+		// Read the first row of texels (width texels, 4 bytes each, packed at the
+		// row start). A dedicated LINEAR R8G8B8A8 image has rowPitch >= width*4;
+		// texel i of row 0 is at byte 4*i.
+		res.ReadbackDone = true
+		copy(res.FirstTexel[:], memMem[0:4])
+		nTexels := width
+		if nTexels*4 > len(memMem) {
+			nTexels = len(memMem) / 4
+		}
+		allRed := nTexels > 0
+		for i := 0; i < nTexels; i++ {
+			off := i * 4
+			var t [4]byte
+			copy(t[:], memMem[off:off+4])
+			res.TexelsChecked++
+			if t == res.ExpectTexel {
+				res.TexelsRed++
+			} else {
+				allRed = false
+			}
+		}
+		res.ReadbackPass = allRed
+		res.Trace = append(res.Trace, fmt.Sprintf(
+			"readback device-memory blob res_id=%d size=%d: texel0=%v expect=%v texels_red=%d/%d pass=%v",
+			memBlobResID, allocSize, res.FirstTexel, res.ExpectTexel, res.TexelsRed, res.TexelsChecked, res.ReadbackPass))
+		if !res.ReadbackPass {
+			return res, fmt.Errorf("readback: mapped device-memory texels are NOT the clear colour "+
+				"(texel0=%v expect=%v, %d/%d red) — the clear did not land in the guest-visible mapping",
+				res.FirstTexel, res.ExpectTexel, res.TexelsRed, res.TexelsChecked)
 		}
 	}
 
