@@ -45,21 +45,36 @@ Two real bugs were found here that a fake-device unit test cannot catch:
   port-mapped PCI config (0xcf8/0xcfc), BAR-window MMIO, `dma.Reserve`-backed
   page allocation.
 
-## vtest/ — virgl (3D) validation tooling (ready, not yet run end-to-end)
+## vtest/ — virgl (3D) validation against a real virglrenderer
 
 `vtest/` is a pure-Go (CGO=0) client for virglrenderer's **vtest** protocol
 (`virgl_test_server` over a Unix socket — Mesa's CI method, software-rendered
 with llvmpipe, **no GPU**). `vtest/cmd/validator` feeds go-virtio/gpu's actual
-virgl command buffers (the bytes from `buildClearVirglBuffer` etc.) to a real
-`virgl_test_server`, reads the framebuffer back, and asserts the pixels.
+virgl command buffers (the bytes `buildClearVirglBuffer` / `buildDrawVirglBuffer`
+emit) to a real `virgl_test_server`, reads the framebuffer back, and asserts the
+pixels. The protocol client is 100%-unit-tested offline.
 
-The vtest protocol client is 100%-unit-tested offline. The live half is **not
-yet validated** because it needs a Linux host running `virgl_test_server`, and
-the QEMU/HVF setup used here could not (a) resolve DNS in the guest (SLIRP) to
-`apk add virglrenderer`, nor (b) move the ~79 MB virglrenderer+mesa+llvm
-payload into the guest (large 9p/virtio-blk reads hang). It runs cleanly on any
-host with working guest networking, or boot a prebuilt Alpine rootfs that
-already contains `virglrenderer` (Alpine packages it: `virglrenderer-1.1.0`).
+**Validated, end-to-end, against a live virglrenderer:**
+
+- **CLEAR** — go-virtio/gpu's clear-to-red command stream is accepted and the
+  16×16 render target reads back uniformly red (`BGRA 00 00 FF FF`).
+- **DrawTriangle** — accepted and rasterizes: a non-uniform readback (corners
+  the background, centre a triangle fragment), with no renderer error.
+
+This is where two real go-virtio/gpu bugs were caught that the offline path
+could not: `VIRGL_OBJECT_SURFACE` was 7 (must be 8), and `VIRGL_CCMD_BIND_SHADER`
+was 32 (= `SET_TESS_STATE`; must be 31) — the live renderer rejected the draw
+with *"Illegal command buffer"*, dispatching command 32 as `SET_TESS_STATE`.
+Both are fixed (gpu v0.3.1, v0.5.1).
+
+How it was run (the host setup that works on an Apple-Silicon Mac with no GPU
+passthrough): a **Debian arm64 cloud image** under `qemu-system-aarch64 -accel
+hvf`, `apt-get install virgl-server` (the package that ships `virgl_test_server`)
+straight onto the disk, started with `EGL_PLATFORM=surfaceless virgl_test_server
+--use-egl-surfaceless` + `LIBGL_ALWAYS_SOFTWARE=1 GALLIUM_DRIVER=llvmpipe`. Guest
+networking needs `nameserver 10.0.2.3` (SLIRP host-side resolver) and
+`Acquire::ForceIPv4=true` (SLIRP has no IPv6 route). Any Linux host running
+`virgl_test_server` works just as well.
 
 ## Running
 
