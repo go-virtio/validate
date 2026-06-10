@@ -10,4 +10,4 @@ go 1.26.3
 //     the ring. v0.4.0 is the tag that closes that clear-image -> readback set.
 // It is a sibling repo in the go-virtio org; until a tagged version is wired
 // into CI it is resolved from the local checkout via the replace below.
-require github.com/go-virtio/venus v0.5.0
+require github.com/go-virtio/venus v0.5.1
