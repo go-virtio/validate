@@ -60,12 +60,20 @@ pixels. The protocol client is 100%-unit-tested offline.
   16×16 render target reads back uniformly red (`BGRA 00 00 FF FF`).
 - **DrawTriangle** — accepted and rasterizes: a non-uniform readback (corners
   the background, centre a triangle fragment), with no renderer error.
+- **DrawTexturedTriangle** — accepted; a 2×2 red/green/blue/white texture is
+  sampled and perspective-correctly interpolated across the triangle (24
+  distinct interior colours in the readback), no renderer error.
 
-This is where two real go-virtio/gpu bugs were caught that the offline path
-could not: `VIRGL_OBJECT_SURFACE` was 7 (must be 8), and `VIRGL_CCMD_BIND_SHADER`
-was 32 (= `SET_TESS_STATE`; must be 31) — the live renderer rejected the draw
-with *"Illegal command buffer"*, dispatching command 32 as `SET_TESS_STATE`.
-Both are fixed (gpu v0.3.1, v0.5.1).
+This is where three real go-virtio/gpu bugs were caught that the offline path
+could not:
+
+- `VIRGL_OBJECT_SURFACE` was 7 (must be 8) — gpu v0.3.1.
+- `VIRGL_CCMD_BIND_SHADER` was 32 (= `SET_TESS_STATE`; must be 31) — the live
+  renderer rejected the draw with *"Illegal command buffer"*, dispatching
+  command 32 as `SET_TESS_STATE` — gpu v0.5.1.
+- the textured fragment shader's texcoord input defaulted to `CONSTANT` (flat)
+  interpolation — the triangle sampled a single texel until the TGSI input was
+  declared `PERSPECTIVE` — gpu v0.5.3.
 
 How it was run (the host setup that works on an Apple-Silicon Mac with no GPU
 passthrough): a **Debian arm64 cloud image** under `qemu-system-aarch64 -accel
