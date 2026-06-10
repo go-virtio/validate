@@ -157,6 +157,7 @@ type MappedRing struct {
 	ResID      uint32
 	mem        []byte
 	bufferSize int
+	cur        uint32 // monotonic producer write cursor (mirrors vn_ring.cur)
 }
 
 // Head/Tail/Status read the consumer/producer/status control words from the
@@ -190,6 +191,46 @@ func (m *MappedRing) writeCmd(cur uint32, cmd []byte) uint32 {
 	newCur := cur + n
 	binary.LittleEndian.PutUint32(m.mem[ringTailOffset:ringTailOffset+ringControlWord], newCur)
 	return newCur
+}
+
+// Submit writes a whole command stream into the ring buffer at the current
+// monotonic cursor, advances the cursor, and release-stores the new tail. It
+// returns the new tail value, which is the command's seqno
+// (vn_ring_submit_internal: `submit->seqno = ring->cur`). The caller waits for
+// the host head to reach this seqno via WaitHead. cmd MUST be a whole number
+// of dwords (vn_cs pads every command to 4). Commands must collectively fit in
+// the buffer for this simple non-wrapping driver (we size the buffer large).
+func (m *MappedRing) Submit(cmd []byte) uint32 {
+	m.cur = m.writeCmd(m.cur, cmd)
+	return m.cur
+}
+
+// WaitHead busy-polls the HOST-owned head word until head >= seqno (the host
+// consumer has consumed through this command) or the deadline elapses. It
+// mirrors vn_ring.c:vn_ring_wait_seqno (vn_ring_get_seqno_status: head >=
+// seqno). It returns the final head and whether the seqno was reached. Our
+// command sizes keep the monotonic cursor well below 2^31, so the wrapping-
+// aware comparison in Mesa reduces to a plain unsigned >= here.
+func (m *MappedRing) WaitHead(seqno uint32, timeout time.Duration) (head uint32, reached bool) {
+	deadline := time.Now().Add(timeout)
+	for {
+		head = m.Head()
+		if head >= seqno {
+			return head, true
+		}
+		if time.Now().After(deadline) {
+			return head, false
+		}
+		time.Sleep(500 * time.Microsecond)
+	}
+}
+
+// Extra returns the ring's extra (reply) region as a sub-slice of the mapping.
+// Unused by the dedicated-reply-blob path (replies land in a separate blob),
+// but exposed for completeness/inspection.
+func (m *MappedRing) Extra() []byte {
+	base := ringBufferOffset + m.bufferSize
+	return m.mem[base:]
 }
 
 // Unmap releases the mapping.

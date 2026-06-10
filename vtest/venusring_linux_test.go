@@ -211,3 +211,99 @@ func TestVenusRoundTripDialError(t *testing.T) {
 		t.Fatal("want dial error from VenusRingRoundTrip")
 	}
 }
+
+// TestMappedRingSubmitAdvancesCursor checks Submit writes at the monotonic
+// cursor, advances it, and returns the new tail (= the command's seqno per
+// vn_ring_submit_internal: submit->seqno = ring->cur).
+func TestMappedRingSubmitAdvancesCursor(t *testing.T) {
+	r := newTestRing(64, 0)
+	a := []byte{0xAA, 0xBB, 0xCC, 0xDD}
+	b := []byte{0x11, 0x22, 0x33, 0x44}
+	if seq := r.Submit(a); seq != 4 {
+		t.Fatalf("first Submit seqno = %d, want 4", seq)
+	}
+	if seq := r.Submit(b); seq != 8 {
+		t.Fatalf("second Submit seqno = %d, want 8", seq)
+	}
+	if r.Tail() != 8 {
+		t.Fatalf("tail = %d, want 8", r.Tail())
+	}
+	base := ringBufferOffset
+	if !bytes.Equal(r.mem[base:base+4], a) || !bytes.Equal(r.mem[base+4:base+8], b) {
+		t.Fatalf("buffer bytes mismatch: %v", r.mem[base:base+8])
+	}
+}
+
+// TestMappedRingWaitHeadReached drives the head word from a goroutine so
+// WaitHead observes head >= seqno before the deadline (the success arm).
+func TestMappedRingWaitHeadReached(t *testing.T) {
+	r := newTestRing(64, 0)
+	seqno := r.Submit([]byte{1, 2, 3, 4}) // seqno = 4
+	go func() {
+		time.Sleep(2 * time.Millisecond)
+		binary.LittleEndian.PutUint32(r.mem[ringHeadOffset:], seqno) // host advances head
+	}()
+	head, ok := r.WaitHead(seqno, time.Second)
+	if !ok || head < seqno {
+		t.Fatalf("WaitHead reached=%v head=%d seqno=%d", ok, head, seqno)
+	}
+}
+
+// TestMappedRingWaitHeadTimeout covers the deadline arm: head never reaches the
+// seqno, so WaitHead returns reached=false.
+func TestMappedRingWaitHeadTimeout(t *testing.T) {
+	r := newTestRing(64, 0)
+	seqno := r.Submit([]byte{1, 2, 3, 4})
+	head, ok := r.WaitHead(seqno, 5*time.Millisecond)
+	if ok {
+		t.Fatalf("WaitHead should time out (head=%d stayed 0), got reached=true", head)
+	}
+}
+
+// TestMappedRingExtra checks Extra returns the reply region sub-slice (the
+// bytes after head/tail/status + the command buffer).
+func TestMappedRingExtra(t *testing.T) {
+	const bufSize, extraSize = 64, 32
+	r := newTestRing(bufSize, extraSize)
+	extra := r.Extra()
+	if len(extra) != extraSize {
+		t.Fatalf("Extra len = %d, want %d", len(extra), extraSize)
+	}
+	// Mutating Extra must alias the mapping at extra_offset.
+	extra[0] = 0x5A
+	if r.mem[ringBufferOffset+bufSize] != 0x5A {
+		t.Fatalf("Extra is not aliased at extra_offset")
+	}
+}
+
+// TestVenusClearImageDialError confirms VenusClearImage fails cleanly (no
+// panic) when no server is listening — the dial error path.
+func TestVenusClearImageDialError(t *testing.T) {
+	_, err := VenusClearImage("/nonexistent/vtest.sock", 0x1000, 16, 16, [4]float32{1, 0, 0, 1}, 10*time.Millisecond)
+	if err == nil {
+		t.Fatal("want dial error from VenusClearImage")
+	}
+}
+
+// TestPadDword covers the dword-padding helper used by the clear driver.
+func TestPadDword(t *testing.T) {
+	cases := []struct {
+		in   []byte
+		want int
+	}{
+		{[]byte{}, 0},
+		{[]byte{1}, 4},
+		{[]byte{1, 2, 3}, 4},
+		{[]byte{1, 2, 3, 4}, 4},
+		{[]byte{1, 2, 3, 4, 5}, 8},
+	}
+	for _, c := range cases {
+		got := padDword(append([]byte(nil), c.in...))
+		if len(got)%4 != 0 || len(got) != c.want {
+			t.Fatalf("padDword(%v) len=%d, want %d", c.in, len(got), c.want)
+		}
+		if !bytes.Equal(got[:len(c.in)], c.in) {
+			t.Fatalf("padDword(%v) corrupted prefix: %v", c.in, got)
+		}
+	}
+}

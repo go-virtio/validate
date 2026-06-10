@@ -22,9 +22,17 @@ import "encoding/binary"
 
 // VkCommandTypeEXT ids — vn_protocol_driver_defines.h.
 const (
-	cmdTypeVkCreateInstance = 0   // VK_COMMAND_TYPE_vkCreateInstance_EXT
-	cmdTypeVkCreateRingMESA = 188 // VK_COMMAND_TYPE_vkCreateRingMESA_EXT
+	cmdTypeVkCreateInstance            = 0   // VK_COMMAND_TYPE_vkCreateInstance_EXT
+	cmdTypeVkSetReplyCommandStreamMESA = 178 // VK_COMMAND_TYPE_vkSetReplyCommandStreamMESA_EXT
+	cmdTypeVkCreateRingMESA            = 188 // VK_COMMAND_TYPE_vkCreateRingMESA_EXT
 )
+
+// CmdGenerateReplyBit is VK_COMMAND_GENERATE_REPLY_BIT_EXT
+// (vn_protocol_driver_defines.h: `VK_COMMAND_GENERATE_REPLY_BIT_EXT =
+// 0x00000001`). Setting it in a command's cmd_flags makes the host renderer
+// emit a reply into the reply command stream (see EncodeVkSetReplyCommandStreamMESACS
+// and the venusclear driver's reply-shmem path).
+const CmdGenerateReplyBit = 0x1
 
 // VkStructureType ids for the MESA ring structs. VK_MESA_venus_protocol is
 // extension number 385 (xmls/VK_MESA_venus_protocol.xml), so an offset-based
@@ -216,6 +224,35 @@ func EncodeMinimalVkCreateInstanceCS(cmdFlags uint32, appName, engineName string
 	e.simplePointer(false) // pAllocator = NULL
 	if e.simplePointer(instanceHandle != 0) {
 		e.u64(instanceHandle)
+	}
+	return e.b
+}
+
+// EncodeVkSetReplyCommandStreamMESACS produces the command stream for
+// vkSetReplyCommandStreamMESA(&VkCommandStreamDescriptionMESA{resourceId,
+// offset, size}), the command Mesa submits into the ring BEFORE a
+// reply-bearing command to tell the host renderer where to write that reply
+// (vn_ring.c:vn_ring_set_reply_shmem_locked). The reply lands in a SEPARATE
+// reply shmem resource (resourceId), not in the ring's extra region.
+//
+// Field order, from vn_encode_vkSetReplyCommandStreamMESA +
+// vn_encode_VkCommandStreamDescriptionMESA
+// (vn_protocol_driver_transport.h:558 / :27):
+//
+//	i32 cmd_type=178
+//	u32 cmd_flags=0
+//	u64 simple_pointer(pStream)=1
+//	  u32 resourceId
+//	  u64 offset   (size_t -> u64; vn_encode_size_t)
+//	  u64 size     (size_t -> u64)
+func EncodeVkSetReplyCommandStreamMESACS(resourceID uint32, offset, size uint64) []byte {
+	var e csBuilder
+	e.i32(cmdTypeVkSetReplyCommandStreamMESA)
+	e.u32(0) // cmd_flags
+	if e.simplePointer(true) {
+		e.u32(resourceID)
+		e.u64(offset)
+		e.u64(size)
 	}
 	return e.b
 }

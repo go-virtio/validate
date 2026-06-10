@@ -157,6 +157,44 @@ func TestEncodeVkCreateRingMESACS(t *testing.T) {
 	}
 }
 
+// TestEncodeVkSetReplyCommandStreamMESACS is byte-derived from Mesa
+// vn_encode_vkSetReplyCommandStreamMESA + vn_encode_VkCommandStreamDescriptionMESA
+// (src/virtio/venus-protocol/vn_protocol_driver_transport.h:558 / :27):
+//
+//	i32 cmd_type=178
+//	u32 cmd_flags=0
+//	u64 simple_pointer(pStream)=1
+//	  u32 resourceId
+//	  u64 offset   (size_t -> u64)
+//	  u64 size     (size_t -> u64)
+func TestEncodeVkSetReplyCommandStreamMESACS(t *testing.T) {
+	got := EncodeVkSetReplyCommandStreamMESACS(42 /*resourceId*/, 0x80 /*offset*/, 0x1000 /*size*/)
+	want := concat(
+		le32(cmdTypeVkSetReplyCommandStreamMESA), // 178
+		le32(0),                                  // cmd_flags
+		le64(1),                                  // simple_pointer(pStream)=1
+		le32(42),                                 // resourceId
+		le64(0x80),                               // offset
+		le64(0x1000),                             // size
+	)
+	if !bytes.Equal(got, want) {
+		t.Fatalf("EncodeVkSetReplyCommandStreamMESACS\n got=%v\nwant=%v", got, want)
+	}
+	// The stream is a whole number of dwords (4 + 4 + 8 + 4 + 8 + 8 = 36).
+	if len(got)%4 != 0 {
+		t.Fatalf("stream length %d is not dword-aligned", len(got))
+	}
+}
+
+// TestCmdGenerateReplyBit pins the GENERATE_REPLY flag value to the Mesa
+// definition (vn_protocol_driver_defines.h: VK_COMMAND_GENERATE_REPLY_BIT_EXT
+// = 0x00000001).
+func TestCmdGenerateReplyBit(t *testing.T) {
+	if CmdGenerateReplyBit != 0x1 {
+		t.Fatalf("CmdGenerateReplyBit = %#x, want 0x1", CmdGenerateReplyBit)
+	}
+}
+
 // TestRingCreateInfoBodyMatchesVenusModule cross-checks the _self body our
 // encoder emits against the independently-proven go-virtio/venus/ring encoder:
 // strip the 24-byte command+info preamble (cmd_type, cmd_flags, ring,

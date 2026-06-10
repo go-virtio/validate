@@ -1,0 +1,3 @@
+# run-venus.sh scratch (disk overlay, seed.iso, cross-compiled binaries,
+# serial log, UEFI varstore, downloaded base image). Runtime artifacts only.
+/.venus-run/
