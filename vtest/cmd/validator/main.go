@@ -18,6 +18,7 @@ import (
 	"os"
 
 	"github.com/go-virtio/validate/vtest"
+	"github.com/go-virtio/validate/vtest/refrender"
 )
 
 func main() {
@@ -173,71 +174,143 @@ func main() {
 	}
 
 	switch *mode {
+	case "clear":
+		os.Exit(assertClearExact(pixels, int(*w), int(*h)))
+	case "draw":
+		os.Exit(assertDrawExact(pixels, int(*w), int(*h)))
 	case "tex":
-		os.Exit(assertTex(pixels))
+		os.Exit(assertTexExact(pixels, int(*w), int(*h)))
 	default:
-		// clear/draw legacy assertion: pixel[0] is the RED clear background.
-		red := []byte{0x00, 0x00, 0xFF, 0xFF}
-		got := pixels[0:4]
-		if string(got) == string(red) {
-			fmt.Println("PASS: pixel[0] is RED (BGRA 00 00 FF FF)")
-			os.Exit(0)
-		}
-		fmt.Printf("RESULT: pixel[0] = %02X %02X %02X %02X (want red 00 00 FF FF for clear)\n",
-			got[0], got[1], got[2], got[3])
+		fmt.Fprintf(os.Stderr, "unknown -mode %q (clear|draw|tex)\n", *mode)
+		os.Exit(2)
 	}
 }
 
-// assertTex validates a textured-triangle readback. The buffer carries NO CLEAR
-// command (the go-virtio/gpu draw buffers never clear), so the background is
-// whatever the RT initialises to (observed empty = BGRA 00 00 00 00); the
-// triangle interior is the only rendered region. A genuine *textured* triangle
-// sampled from the 2x2 four-colour texel grid must show, across the triangle
-// interior, at least TWO distinct sampled colours — a flat single-colour
-// triangle (background + exactly one interior colour = 2 colours total) means
-// the texture was NOT sampled as a gradient.
+// --- EXACT references for the go-virtio/gpu fixtures ----------------------
 //
-// The background colour is identified empirically as the MOST-COMMON colour
-// (the corners + the area outside the triangle dominate a small triangle).
-// We then require >=2 distinct NON-background colours.
-//
-// It prints a colour histogram and returns the process exit code.
-func assertTex(pixels []byte) int {
-	counts := map[[4]byte]int{}
-	for i := 0; i+4 <= len(pixels); i += 4 {
-		var k [4]byte
-		copy(k[:], pixels[i:i+4])
-		counts[k]++
-	}
-	fmt.Printf("distinct colours in readback: %d\n", len(counts))
-	// Identify the background as the most-common colour.
-	var bg [4]byte
-	bgCount := -1
-	for k, v := range counts {
-		fmt.Printf("  colour BGRA %02X %02X %02X %02X : %d px\n", k[0], k[1], k[2], k[3], v)
-		if v > bgCount {
-			bgCount, bg = v, k
+// These mirror, byte-for-byte, the fixtures the gpu package dumps
+// (gpu3d_draw_test.go triVerts/triColor, gpu3d_tex_test.go texTriVerts/texData2)
+// and the viewport/sampler state the gpu draw buffers encode. The validator
+// builds the SAME render via refrender and asserts the live virglrenderer
+// readback matches it.
+
+// gpuVerts is the 3 clip-space vertices (with texcoords) both gpu draw paths
+// use: top (0,0.5) uv(0.5,1), bottom-left (-0.5,-0.5) uv(0,0), bottom-right
+// (0.5,-0.5) uv(1,0).
+var gpuVerts = [3]refrender.Vertex{
+	{X: 0.0, Y: 0.5, U: 0.5, V: 1.0},
+	{X: -0.5, Y: -0.5, U: 0.0, V: 0.0},
+	{X: 0.5, Y: -0.5, U: 1.0, V: 0.0},
+}
+
+// gpuFlatColor is gpu3d_draw_test.go triColor (RGBA).
+var gpuFlatColor = [4]float32{0.25, 0.5, 0.75, 1.0}
+
+// gpuBG is the render-target's uncleared initial value observed in the readback
+// (the gpu draw/tex buffers carry NO CLEAR), BGRA 00 00 00 00.
+var gpuBG = refrender.BGRA{0x00, 0x00, 0x00, 0x00}
+
+// edgeTol is the pixel band around the analytic triangle edge within which a
+// coverage disagreement is tolerated: rasterizer fill-convention/rounding can
+// differ by up to one pixel along an edge. We allow ±1px.
+const edgeTol = 1
+
+// drawColourTol is the per-channel tolerance for the flat-draw interior: the
+// colour is a single UNORM-packed constant, so the only slack is rounding. ±2.
+const drawColourTol = 2
+
+// texColourTol is the per-channel tolerance for the textured interior: llvmpipe
+// does fixed-point bilinear blending; our reference does float bilinear. A few
+// LSBs of difference are expected. ±4.
+const texColourTol = 4
+
+const maxDiffs = 64
+
+// dumpGrids prints the real readback and the reference coverage as side-by-side
+// ASCII maps for the serial log.
+func dumpGrids(real []byte, refIn []bool, w, h int, bg refrender.BGRA) {
+	realIn := refrender.CoverageOf(refrender.BytesToBGRA(real), bg)
+	fmt.Println("--- REAL readback coverage (#=non-bg, .=bg) ---")
+	fmt.Print(refrender.ASCIIMap(realIn, w, h))
+	fmt.Println("--- REFERENCE coverage (#=interior, .=exterior) ---")
+	fmt.Print(refrender.ASCIIMap(refIn, w, h))
+}
+
+// assertClearExact: every pixel must be RED (BGRA 00 00 FF FF). The clear buffer
+// fills the whole RT, so this is an exact full-frame check (no tolerance).
+func assertClearExact(pixels []byte, w, h int) int {
+	red := refrender.BGRA{0x00, 0x00, 0xFF, 0xFF}
+	px := refrender.BytesToBGRA(pixels)
+	bad := 0
+	var first refrender.PixelDiff
+	for i, p := range px {
+		if p != red {
+			if bad == 0 {
+				first = refrender.PixelDiff{X: i % w, Y: i / w, Real: p, Ref: red}
+			}
+			bad++
 		}
 	}
-	fmt.Printf("background (most-common) BGRA = %02X %02X %02X %02X (%d px)\n", bg[0], bg[1], bg[2], bg[3], bgCount)
+	fmt.Printf("CLEAR exact: %d/%d pixels == RED (BGRA 00 00 FF FF)\n", len(px)-bad, len(px))
+	if bad == 0 {
+		fmt.Println("PASS: CLEAR exact — every pixel is RED")
+		return 0
+	}
+	fmt.Printf("FAIL: CLEAR — %d pixels != RED; first at (%d,%d) real=%02X%02X%02X%02X\n",
+		bad, first.X, first.Y, first.Real[0], first.Real[1], first.Real[2], first.Real[3])
+	return 1
+}
 
-	// Count distinct NON-background colours (the sampled triangle interior).
-	nonBg := 0
-	for k := range counts {
-		if k != bg {
-			nonBg++
+// assertDrawExact: coverage matches the analytic triangle within ±1px and the
+// interior is the flat gpu colour within ±2 per channel.
+func assertDrawExact(pixels []byte, w, h int) int {
+	vp := refrender.ViewportFor(w, h)
+	ref, cov := refrender.DrawReference(vp, gpuVerts, gpuFlatColor, gpuBG, w, h)
+	dumpGrids(pixels, cov.In, w, h, gpuBG)
+	res := refrender.Compare(pixels, ref, cov, gpuBG, edgeTol, drawColourTol, maxDiffs)
+	fmt.Print(res.Summary())
+	fill := drawFlatBGRA()
+	fmt.Printf("expected flat interior BGRA = %02X%02X%02X%02X\n", fill[0], fill[1], fill[2], fill[3])
+	if res.Pass {
+		fmt.Println("PASS: DRAW exact — coverage matches analytic triangle (±1px) and flat colour within ±2")
+		return 0
+	}
+	fmt.Println("FAIL: DRAW exact — readback diverges from reference (see DIFF lines)")
+	return 1
+}
+
+// drawFlatBGRA returns the gpu flat colour packed as BGRA (for the report
+// line): the first interior pixel of the reference render.
+func drawFlatBGRA() refrender.BGRA {
+	ref, cov := refrender.DrawReference(refrender.ViewportFor(16, 16), gpuVerts, gpuFlatColor, gpuBG, 16, 16)
+	for i, in := range cov.In {
+		if in {
+			return ref[i]
 		}
 	}
-	fmt.Printf("distinct non-background (triangle interior) colours: %d\n", nonBg)
+	return refrender.BGRA{}
+}
 
-	if len(counts) < 2 {
-		fmt.Println("FAIL: readback is uniform (no triangle rendered at all)")
-		return 1
+// assertTexExact: coverage matches the analytic triangle within ±1px and the
+// interior colours match the LINEAR-sampled reference within ±4 per channel.
+// The gpu sampler state is LINEAR/CLAMP_TO_EDGE (gpu3d_tex.go samplerStateS0),
+// so the reference uses the LINEAR filter — matching the gpu's ACTUAL filter.
+func assertTexExact(pixels []byte, w, h int) int {
+	vp := refrender.ViewportFor(w, h)
+	tex := []byte{
+		0xFF, 0x00, 0x00, 0xFF, // (0,0) red
+		0x00, 0xFF, 0x00, 0xFF, // (1,0) green
+		0x00, 0x00, 0xFF, 0xFF, // (0,1) blue
+		0xFF, 0xFF, 0xFF, 0xFF, // (1,1) white
 	}
-	if nonBg < 2 {
-		fmt.Println("FAIL: triangle interior is a single flat colour (texture NOT sampled as a gradient)")
-		return 1
+	ref, cov := refrender.TexReference(vp, gpuVerts, tex, 2, 2, refrender.Linear, gpuBG, w, h)
+	dumpGrids(pixels, cov.In, w, h, gpuBG)
+	res := refrender.Compare(pixels, ref, cov, gpuBG, edgeTol, texColourTol, maxDiffs)
+	fmt.Print(res.Summary())
+	if res.Pass {
+		fmt.Println("PASS: TEX exact — coverage matches analytic triangle (±1px) and LINEAR-sampled colours within ±4")
+		return 0
 	}
-	fmt.Println("PASS: textured triangle shows >=2 distinct sampled texel colours in its interior")
-	return 0
+	fmt.Println("FAIL: TEX exact — readback diverges from LINEAR reference (see DIFF lines)")
+	return 1
 }
