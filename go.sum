@@ -4,5 +4,7 @@ github.com/go-virtio/common v0.1.4 h1:nVyHtInA3omUgv9MtLAR/0IXW0DKHSt/x0maEVs4+/
 github.com/go-virtio/common v0.1.4/go.mod h1:tllXVerGT1TquYzy5o1K5UyAWSd1Ap/Z68f9zzJKrLQ=
 github.com/go-virtio/gpu v0.5.0 h1:oJmTIRF4Rg6/DBPsNWsRwh/YVVPOAybsp2VknMdhmGk=
 github.com/go-virtio/gpu v0.5.0/go.mod h1:o0zwTq9WHWGQW0s3LA3kyt3yDT76g15PTxfCnj6gjTs=
+github.com/openweft/weft-cidata v0.2.0 h1:HLUlc1iXNfEl5c5h3qMwV9uvBzrk3fQRYT14s0OvQiQ=
+github.com/openweft/weft-cidata v0.2.0/go.mod h1:rHxPRc5+2YPP4o4ZCc7qHVLkFtf8m5N0911XezOtbfE=
 github.com/usbarmory/tamago v1.26.4 h1:laFvRANKgVYFHxLHjIlhqJCc3Xm+qMyab2SlUoNw6zY=
 github.com/usbarmory/tamago v1.26.4/go.mod h1:HZkb+ZkzFl8aCxAuF7exsKX+XaNM0mYG9Iv7ooX1WDY=

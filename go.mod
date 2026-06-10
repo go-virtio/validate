@@ -8,3 +8,5 @@ require (
 	github.com/go-virtio/gpu v0.5.0
 	github.com/usbarmory/tamago v1.26.4
 )
+
+require github.com/openweft/weft-cidata v0.2.0
