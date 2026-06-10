@@ -131,6 +131,34 @@ func TestEncodeTransferGet(t *testing.T) {
 	}
 }
 
+func TestEncodeTransferPut(t *testing.T) {
+	// 11-dword transfer header in VCMD_TRANSFER_* order, then DataSize bytes of
+	// payload. Header length = VCMD_TRANSFER_HDR_SIZE (11) + len(data)/4 dwords.
+	// 12 bytes of data = 3 dwords of a vertex buffer upload (handle 2).
+	data := concat(le32(0x3f800000), le32(0x00000000), le32(0xbf800000))
+	a := TransferGetArgs{
+		Handle: 2, Level: 0, Stride: 12, LayerStride: 12,
+		X: 0, Y: 0, Z: 0, Width: 3, Height: 1, Depth: 1,
+		DataSize: uint32(len(data)),
+	}
+	got := encodeTransferPut(a, data)
+	want := concat(
+		le32(vcmdTransferHdrSize+uint32(len(data))/4), le32(VcmdTransferPut),
+		le32(2), le32(0), le32(12), le32(12),
+		le32(0), le32(0), le32(0), le32(3), le32(1), le32(1),
+		le32(uint32(len(data))),
+		data,
+	)
+	if !bytes.Equal(got, want) {
+		t.Fatalf("transfer put\n got=%v\nwant=%v", got, want)
+	}
+	// header advertises 11 + data dwords; total wire bytes after the 8-byte
+	// header must be (11*4 + len(data)).
+	if len(got)-hdrBytes != vcmdTransferHdrSize*4+len(data) {
+		t.Fatalf("transfer put payload = %d bytes, want %d", len(got)-hdrBytes, vcmdTransferHdrSize*4+len(data))
+	}
+}
+
 // ---- live-method tests against a scripted in-memory server ---------------
 
 // fakeServer is an io.ReadWriter: Write captures what the client sends; Read
@@ -223,6 +251,26 @@ func TestTransferGet(t *testing.T) {
 	}
 	if !bytes.Equal(f.sent.Bytes(), encodeTransferGet(a)) {
 		t.Fatal("transfer get request bytes mismatch")
+	}
+}
+
+func TestTransferPut(t *testing.T) {
+	// No reply body. Confirm the client writes exactly encodeTransferPut's bytes.
+	f := newFake(nil)
+	c := New(f)
+	data := concat(le32(0xCAFEBABE), le32(0x0BADF00D))
+	a := TransferGetArgs{Handle: 2, Width: 2, Height: 1, Depth: 1, DataSize: uint32(len(data))}
+	if err := c.TransferPut(a, data); err != nil {
+		t.Fatalf("transfer put: %v", err)
+	}
+	if !bytes.Equal(f.sent.Bytes(), encodeTransferPut(a, data)) {
+		t.Fatal("transfer put request bytes mismatch")
+	}
+}
+
+func TestTransferPutWriteError(t *testing.T) {
+	if err := New(&errRW{failWrite: true}).TransferPut(TransferGetArgs{DataSize: 4}, []byte{1, 2, 3, 4}); err == nil {
+		t.Fatal("want transfer put write error")
 	}
 }
 

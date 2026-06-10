@@ -25,6 +25,7 @@ func main() {
 		w    = flag.Uint("w", 16, "render target width")
 		h    = flag.Uint("h", 16, "render target height")
 		mode = flag.String("mode", "clear", "clear|draw|tex (informational)")
+		vb   = flag.String("vb", "", "vertex-buffer data file; if set, create+upload VB resource 2 before submit (draw mode)")
 	)
 	flag.Parse()
 
@@ -64,6 +65,36 @@ func main() {
 		os.Exit(1)
 	}
 	fmt.Printf("created resource 1: %dx%d BGRA render-target\n", *w, *h)
+
+	// Draw mode: the DRAW_VBO command buffer references vertex-buffer resource
+	// handle 2 (go-virtio/gpu vbufResourceID). Create it as a PIPE_BUFFER with
+	// VIRGL_BIND_VERTEX_BUFFER and upload the vertex data, mirroring
+	// gpu3d_draw.go:createVertexBuffer, before submitting the command buffer.
+	if *vb != "" {
+		vbData, err := os.ReadFile(*vb)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "read vb %s: %v\n", *vb, err)
+			os.Exit(2)
+		}
+		vbRes := vtest.ResourceCreateArgs{
+			Handle: 2, Target: 0 /*PIPE_BUFFER*/, Format: 0,
+			Bind:  1 << 4, /*VIRGL_BIND_VERTEX_BUFFER*/
+			Width: uint32(len(vbData)), Height: 1, Depth: 1, ArraySize: 1,
+		}
+		if err := c.CreateResource(vbRes); err != nil {
+			fmt.Fprintf(os.Stderr, "create vb resource: %v\n", err)
+			os.Exit(1)
+		}
+		if err := c.TransferPut(vtest.TransferGetArgs{
+			Handle: 2, Stride: uint32(len(vbData)), LayerStride: uint32(len(vbData)),
+			Width: uint32(len(vbData)), Height: 1, Depth: 1,
+			DataSize: uint32(len(vbData)),
+		}, vbData); err != nil {
+			fmt.Fprintf(os.Stderr, "upload vb: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("created+uploaded VB resource 2: %d bytes\n", len(vbData))
+	}
 
 	if err := c.SubmitCmd(cmdBuf); err != nil {
 		fmt.Fprintf(os.Stderr, "submit cmd: %v\n", err)

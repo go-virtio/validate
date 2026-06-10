@@ -133,6 +133,39 @@ func encodeSubmitCmd(cmdBuf []byte) ([]byte, error) {
 	return append(b, cmdBuf...), nil
 }
 
+// ---- transfer put ---------------------------------------------------------
+
+// encodeTransferPut builds VCMD_TRANSFER_PUT (cmd 5). Header length =
+// VCMD_TRANSFER_HDR_SIZE (11) dwords + DataSize/4 payload dwords; payload is the
+// 11 transfer fields followed by DataSize bytes of resource data. The server
+// (vtest_renderer.c:vtest_transfer_put) reads the 11-dword header then
+// block-reads DataSize bytes into the resource. Used here to upload vertex
+// buffer contents before a DRAW_VBO.
+func encodeTransferPut(a TransferGetArgs, data []byte) []byte {
+	totalDwords := vcmdTransferHdrSize + uint32(len(data))/4
+	b := encodeHeader(totalDwords, VcmdTransferPut)
+	b = binary.LittleEndian.AppendUint32(b, a.Handle)
+	b = binary.LittleEndian.AppendUint32(b, a.Level)
+	b = binary.LittleEndian.AppendUint32(b, a.Stride)
+	b = binary.LittleEndian.AppendUint32(b, a.LayerStride)
+	b = binary.LittleEndian.AppendUint32(b, a.X)
+	b = binary.LittleEndian.AppendUint32(b, a.Y)
+	b = binary.LittleEndian.AppendUint32(b, a.Z)
+	b = binary.LittleEndian.AppendUint32(b, a.Width)
+	b = binary.LittleEndian.AppendUint32(b, a.Height)
+	b = binary.LittleEndian.AppendUint32(b, a.Depth)
+	b = binary.LittleEndian.AppendUint32(b, a.DataSize)
+	return append(b, data...)
+}
+
+// TransferPut sends VCMD_TRANSFER_PUT uploading data into a resource. No reply.
+func (c *Client) TransferPut(a TransferGetArgs, data []byte) error {
+	if _, err := c.rw.Write(encodeTransferPut(a, data)); err != nil {
+		return fmt.Errorf("vtest: transfer put: %w", err)
+	}
+	return nil
+}
+
 // ---- transfer get ---------------------------------------------------------
 
 // TransferGetArgs mirrors the 11-dword VCMD_TRANSFER_GET payload read by
