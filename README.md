@@ -1,3 +1,5 @@
+<p align="center"><img src="https://raw.githubusercontent.com/go-virtio/brand/main/social/go-virtio.png" alt="go-virtio/validate" width="720"></p>
+
 # go-virtio/validate
 
 A **real-hardware validation harness** for the [`go-virtio`](https://github.com/go-virtio)
