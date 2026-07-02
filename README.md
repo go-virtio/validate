@@ -2,6 +2,10 @@
 
 # go-virtio/validate
 
+[![Go Reference](https://pkg.go.dev/badge/github.com/go-virtio/validate.svg)](https://pkg.go.dev/github.com/go-virtio/validate)
+[![License: BSD-3-Clause](https://img.shields.io/badge/License-BSD%203--Clause-blue.svg)](https://opensource.org/licenses/BSD-3-Clause)
+[![CI](https://github.com/go-virtio/validate/actions/workflows/ci.yml/badge.svg)](https://github.com/go-virtio/validate/actions/workflows/ci.yml)
+
 A **real-hardware validation harness** for the [`go-virtio`](https://github.com/go-virtio)
 guest drivers: it boots a bare-metal [tamago](https://github.com/usbarmory/tamago)
 guest under QEMU, drives a real virtio-gpu device with the pure-Go go-virtio
