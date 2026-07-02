@@ -1,3 +1,5 @@
 *.elf
 *.ppm
 *.png
+*.iso
+*.log

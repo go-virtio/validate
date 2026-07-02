@@ -1,0 +1,121 @@
+# go-virtio/validate CI.
+#
+# This repo is a real-hardware validation harness, not a plain library, so
+# its CI has two distinct concerns:
+#
+#   * vtest       — the host-side `vtest/` module (Venus/virgl reference
+#                   client, refrender, protocol codecs) is portable Go. We
+#                   build + vet it on all six 64-bit Go targets and run its
+#                   full unit-test suite on the two native runners (the
+#                   fd-passing SCM_RIGHTS tests use real socketpairs, which
+#                   are not reliable under qemu-user, so the emulated legs
+#                   build-and-vet only).
+#
+#   * tamago-build — the guest harnesses under `cmd/*validate` are tamago
+#                   (GOOS=tamago) bare-metal amd64 programs; the standard
+#                   toolchain cannot build them. We install the pinned
+#                   tamago-go release and cross-compile every guest ELF, plus
+#                   the host-side `cmd/mkseed` tool, to prove the harness
+#                   still builds. (Booting the ELFs under QEMU against real
+#                   virtio-*-pci devices is the run-*.sh flow, run out of
+#                   band — it needs KVM/TCG + per-device backends.)
+
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  vtest:
+    name: vtest (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+            native: true
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+            native: true
+          - arch: riscv64
+            runner: ubuntu-latest
+          - arch: loong64
+            runner: ubuntu-latest
+          - arch: ppc64le
+            runner: ubuntu-latest
+          - arch: s390x
+            runner: ubuntu-latest
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v6
+        with:
+          go-version: stable
+      - name: go build
+        working-directory: vtest
+        env:
+          GOOS: linux
+          GOARCH: ${{ matrix.arch }}
+          CGO_ENABLED: "0"
+        run: go build ./...
+      - name: go vet
+        working-directory: vtest
+        env:
+          GOOS: linux
+          GOARCH: ${{ matrix.arch }}
+          CGO_ENABLED: "0"
+        run: go vet ./...
+      - name: go test (native only)
+        if: ${{ matrix.native }}
+        working-directory: vtest
+        run: go test -race -covermode=atomic ./...
+
+  tamago-build:
+    name: tamago-build (guest ELFs)
+    runs-on: ubuntu-latest
+    env:
+      TAMAGO_VERSION: "1.26.4"
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v6
+        with:
+          go-version: stable
+      - name: install tamago-go ${{ env.TAMAGO_VERSION }}
+        run: |
+          set -euxo pipefail
+          url="https://github.com/usbarmory/tamago-go/releases/download/tamago-go${TAMAGO_VERSION}/tamago-go${TAMAGO_VERSION}.linux-amd64.tar.gz"
+          curl -fsSL "$url" -o /tmp/tamago-go.tar.gz
+          mkdir -p "$HOME/tamago-go"
+          tar -C "$HOME/tamago-go" --strip-components=1 -xzf /tmp/tamago-go.tar.gz
+          echo "TAMAGO=$HOME/tamago-go/bin/go" >> "$GITHUB_ENV"
+      - name: build guest validate ELFs (tamago/amd64)
+        env:
+          GOWORK: off
+          GOOS: tamago
+          GOARCH: amd64
+          GOOSPKG: github.com/usbarmory/tamago
+        run: |
+          set -euxo pipefail
+          mkdir -p /tmp/elf
+          for d in cmd/*/; do
+            n=$(basename "$d")
+            # cmd/mkseed is a host-side (non-tamago) helper — skip here.
+            if grep -rq "usbarmory/tamago" "$d"; then
+              "$TAMAGO" build -ldflags "-T 0x10010000 -R 0x1000" \
+                -o "/tmp/elf/${n}.elf" "./$d"
+              echo "built ${n}.elf"
+            fi
+          done
+          ls -l /tmp/elf
+      - name: build host mkseed tool
+        run: |
+          set -euxo pipefail
+          GOWORK=off go build -o /tmp/mkseed ./cmd/mkseed
+          echo "built mkseed"
