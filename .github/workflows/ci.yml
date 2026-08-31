@@ -55,7 +55,7 @@ jobs:
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with:
           go-version: stable
       - name: go build
@@ -91,7 +91,7 @@ jobs:
       TAMAGO_VERSION: "1.26.4"
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with:
           go-version: stable
       - name: install tamago-go ${{ env.TAMAGO_VERSION }}
