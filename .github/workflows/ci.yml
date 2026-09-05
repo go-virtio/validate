@@ -87,16 +87,36 @@ jobs:
   tamago-build:
     name: tamago-build (guest ELFs)
     runs-on: ubuntu-latest
-    env:
-      TAMAGO_VERSION: "1.26.4"
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
         with:
           go-version: stable
-      - name: install tamago-go ${{ env.TAMAGO_VERSION }}
+      # The toolchain version is READ FROM go.mod, not pinned in this file.
+      # Pinned, the two drift the moment anything raises the module: a pull
+      # request taking github.com/usbarmory/tamago to v1.27.1 was built against
+      # a toolchain still fetched at tamago-go1.26.4 and failed with
+      #
+      #     go: GOOSPKG="github.com/usbarmory/tamago" not found in module list
+      #
+      # which names neither version and reads like a broken module path.
+      #
+      # `go mod edit -json` parses go.mod offline and exactly -- no module
+      # download, and no regex over a file whose `require` block can be written
+      # as one line or as a parenthesised block. The step name is static
+      # because `env.` in a step name is evaluated when the job starts, before
+      # anything can have resolved it.
+      - name: install tamago-go (version from go.mod)
         run: |
           set -euxo pipefail
+          TAMAGO_VERSION=$(go mod edit -json \
+            | jq -r '.Require[] | select(.Path=="github.com/usbarmory/tamago") | .Version')
+          if [ -z "$TAMAGO_VERSION" ] || [ "$TAMAGO_VERSION" = "null" ]; then
+            echo "::error::github.com/usbarmory/tamago is not required in go.mod"
+            exit 1
+          fi
+          TAMAGO_VERSION="${TAMAGO_VERSION#v}"
+          echo "tamago toolchain: $TAMAGO_VERSION (from go.mod)"
           url="https://github.com/usbarmory/tamago-go/releases/download/tamago-go${TAMAGO_VERSION}/tamago-go${TAMAGO_VERSION}.linux-amd64.tar.gz"
           curl -fsSL "$url" -o /tmp/tamago-go.tar.gz
           # The release tarball packs the toolchain under absolute paths
