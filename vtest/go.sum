@@ -1,6 +1,2 @@
-github.com/go-virtio/venus v0.3.0 h1:/VXLlTR/feAkacxLYh4O71/AqJDJfdKK2MDzDbn4QFU=
-github.com/go-virtio/venus v0.3.0/go.mod h1:dBJv4FCbUrXhKZm4vjOrEEQgFUbo67gYVq4tmWSlAKI=
-github.com/go-virtio/venus v0.5.0 h1:CUzVk8smuxEczd7yGxpOsgkb+kZNzLckoOoW/xvLmdk=
-github.com/go-virtio/venus v0.5.0/go.mod h1:dBJv4FCbUrXhKZm4vjOrEEQgFUbo67gYVq4tmWSlAKI=
 github.com/go-virtio/venus v0.5.1 h1:E3aaINvZTil7WVrBN+1iGeKzO8dFH/FHnLDR8eoODx8=
 github.com/go-virtio/venus v0.5.1/go.mod h1:dBJv4FCbUrXhKZm4vjOrEEQgFUbo67gYVq4tmWSlAKI=
