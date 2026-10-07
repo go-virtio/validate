@@ -57,7 +57,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
         with:
-          go-version: stable
+          go-version: '1.27.1'
       - name: go build
         working-directory: vtest
         env:
@@ -91,7 +91,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
         with:
-          go-version: stable
+          go-version: '1.27.1'
       # The toolchain version is READ FROM go.mod, not pinned in this file.
       # Pinned, the two drift the moment anything raises the module: a pull
       # request taking github.com/usbarmory/tamago to v1.27.1 was built against
