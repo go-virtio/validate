@@ -11,7 +11,7 @@
 #                   are not reliable under qemu-user, so the emulated legs
 #                   build-and-vet only).
 #
-#   * tamago-build — the guest harnesses under `cmd/*validate` are tamago
+#   * tamago-build — the guest harnesses under `guest/cmd/*validate` (the nested `guest/` module) are tamago
 #                   (GOOS=tamago) bare-metal amd64 programs; the standard
 #                   toolchain cannot build them. We install the pinned
 #                   tamago-go release and cross-compile every guest ELF, plus
@@ -84,6 +84,31 @@ jobs:
         # race/checkptr instrumentation. Coverage is still collected + gated.
         run: go test -covermode=atomic -coverprofile=coverage.out ./...
 
+  # A host `go mod tidy` must leave go.sum alone in the host modules, so a
+  # dependency sweep cannot silently break the guest lane (#6). The guest
+  # module is deliberately absent: it needs the tamago toolchain, see below.
+  host-tidy:
+    name: host go mod tidy is a no-op
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: '1.27.3'
+      - name: tidy root module
+        env:
+          GOWORK: off
+        run: |
+          go mod tidy
+          git diff --exit-code -- go.mod go.sum
+      - name: tidy vtest module
+        working-directory: vtest
+        env:
+          GOWORK: off
+        run: |
+          go mod tidy
+          git diff --exit-code -- go.mod go.sum
+
   tamago-build:
     name: tamago-build (guest ELFs)
     runs-on: ubuntu-latest
@@ -106,10 +131,10 @@ jobs:
       # as one line or as a parenthesised block. The step name is static
       # because `env.` in a step name is evaluated when the job starts, before
       # anything can have resolved it.
-      - name: install tamago-go (version from go.mod)
+      - name: install tamago-go (version from guest/go.mod)
         run: |
           set -euxo pipefail
-          TAMAGO_VERSION=$(go mod edit -json \
+          TAMAGO_VERSION=$(go mod edit -json guest/go.mod \
             | jq -r '.Require[] | select(.Path=="github.com/usbarmory/tamago") | .Version')
           if [ -z "$TAMAGO_VERSION" ] || [ "$TAMAGO_VERSION" = "null" ]; then
             echo "::error::github.com/usbarmory/tamago is not required in go.mod"
@@ -128,7 +153,22 @@ jobs:
           gobin=$(find "$HOME/tamago-extract" -type f -path '*/bin/go' | head -1)
           test -x "$gobin"
           echo "TAMAGO=$gobin" >> "$GITHUB_ENV"
+      # The guest module's go.sum can only be tidied with the tamago
+      # toolchain (a host `go mod tidy` strips the tamago sums, #6), so the
+      # check runs here and not in the host-tidy job.
+      - name: guest go.mod/go.sum are tidy (tamago toolchain)
+        working-directory: guest
+        env:
+          GOWORK: off
+          GOOS: tamago
+          GOARCH: amd64
+          GOOSPKG: github.com/usbarmory/tamago
+        run: |
+          set -euxo pipefail
+          "$TAMAGO" mod tidy
+          git diff --exit-code -- go.mod go.sum
       - name: build guest validate ELFs (tamago/amd64)
+        working-directory: guest
         env:
           GOWORK: off
           GOOS: tamago
@@ -139,12 +179,9 @@ jobs:
           mkdir -p /tmp/elf
           for d in cmd/*/; do
             n=$(basename "$d")
-            # cmd/mkseed is a host-side (non-tamago) helper — skip here.
-            if grep -rq "usbarmory/tamago" "$d"; then
-              "$TAMAGO" build -ldflags "-T 0x10010000 -R 0x1000" \
-                -o "/tmp/elf/${n}.elf" "./$d"
-              echo "built ${n}.elf"
-            fi
+            "$TAMAGO" build -ldflags "-T 0x10010000 -R 0x1000" \
+              -o "/tmp/elf/${n}.elf" "./$d"
+            echo "built ${n}.elf"
           done
           ls -l /tmp/elf
       - name: build host mkseed tool

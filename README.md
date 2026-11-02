@@ -39,7 +39,16 @@ Two real bugs were found here that a fake-device unit test cannot catch:
 - **x86_64 under TCG.** tamago has no arm64 QEMU-`virt` board; HVF only
   accelerates arm64 guests, so x86_64 tamago runs under `qemu-system-x86_64`
   TCG emulation (slow but correct for a correctness check).
-- **`board/board.go`** — a local q35/amd64 board (modeled on tamago's
+- **`guest/` is its own Go module** (`github.com/go-virtio/validate/guest`):
+  the guest harnesses (`guest/cmd/*validate`, `guest/board`, `guest/transport`)
+  import `github.com/usbarmory/tamago/...`, which only compiles for
+  `GOOS=tamago`. Kept out of the root module, a host `go mod tidy` there no
+  longer strips the tamago `go.sum` entries the guest build needs (#6). Tidy
+  `guest/` only with a tamago toolchain
+  (`GOOS=tamago GOARCH=amd64 GOOSPKG=github.com/usbarmory/tamago go mod tidy`);
+  CI checks that, and that host tidy is a no-op for the root and `vtest/`
+  modules.
+- **`guest/board/board.go`** — a local q35/amd64 board (modeled on tamago's
   `cloud_hypervisor/vm`) that, crucially, **masks the legacy 8259 PIC**
   (`outb(0x21,0xff)`) after switching IRQ routing to the I/O APIC. Without
   this, q35's legacy 8254 PIT ticks IRQ0 onto IDT vector 8 (the Double-Fault
@@ -47,7 +56,7 @@ Two real bugs were found here that a fake-device unit test cannot catch:
   wall-clock budget. (Upstream note: tamago's own `cloud_hypervisor/vm` board
   has the same missing mask and would fault identically on q35; its
   `board/firecracker/microvm` correctly does `reg.Out8(0x21, 0xff)`.)
-- **`transport.go`** — `tamagoTransport` implementing `common.Transport`:
+- **`guest/transport/transport.go`** — `tamagoTransport` implementing `common.Transport`:
   port-mapped PCI config (0xcf8/0xcfc), BAR-window MMIO, `dma.Reserve`-backed
   page allocation.
 
