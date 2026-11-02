@@ -26,7 +26,7 @@ HOST_PORT="${HOST_PORT:-15810}"   # host peer binds this; QEMU's remote
 GUEST_PORT="${GUEST_PORT:-15811}" # QEMU binds this (local); guest RX
 
 echo "== build =="
-( cd "$HERE" && GOWORK=off GOOS=tamago GOARCH=amd64 \
+( cd "$HERE/guest" && GOWORK=off GOOS=tamago GOARCH=amd64 \
   GOOSPKG=github.com/usbarmory/tamago \
   "$TAMAGO" build -ldflags "-T 0x10010000 -R 0x1000" -o "$ELF" ./cmd/netvalidate ) || exit 1
 
